@@ -1,0 +1,147 @@
+node ('master'){
+     stage('Build'){
+
+ def branch = input id: 'branch',
+          message: 'Please select branch',
+          ok: 'Okay',
+            parameters: [
+         [
+            $class: 'ChoiceParameterDefinition', choices: 'master\nfeature/Code_Refator\nreview-comments\nfeature/code_refactor_backup\nfeature/backup_master\nissuer-acq-seperation', 
+            name: 'Take your pick',
+            description: 'A select  option'
+          ]
+    ]
+    
+    
+git branch: "${branch}", url: 'ssh://git@code.airtelworld.in:7999/air/upi-switch.git'
+def pom = readMavenPom file: 'pom.xml'
+sh '''cd $WORKSPACE
+mvn clean -U -X install -DskipTests=true '''
+
+stage ('Deploy')
+
+     def IP = input id: 'IP',
+          message: 'Please select server ip',
+          ok: 'Okay',
+            parameters: [
+         [
+            $class: 'ChoiceParameterDefinition', choices: '10.56.110.145\n10.56.110.173', 
+            name: 'Take your pick',
+            description: 'Select the server ip'
+          ]
+    ]
+    
+
+sh """cd $WORKSPACE
+
+sshpass -p "test123" ssh -o StrictHostKeyChecking=no testuser@$IP << EOF
+
+echo $IP
+
+cd /opt/upi-switch
+
+#mv upi-switch-${pom.version}.jar bkp/upi-switch-${pom.version}.jar-`date +\'%d_%b_%Y_%T\'` || exit 0
+
+EOF
+
+cd $WORKSPACE/target
+#sudo sshpass -p "test123" scp -r upi-switch-${pom.version}.jar testuser@$IP:/opt/upi-switch
+
+
+"""
+
+    stage ("Restart")
+        
+         try {
+        
+       input "Do you want restart service that you deployed on $IP?"
+      sh """sshpass -p "test123" ssh -o StrictHostKeyChecking=no testuser@$IP << EOF
+cd /opt/upi-switch
+sh -x kill.sh && sleep 2
+./startService.sh upi-switch-1.0.0.jar
+sh -x /opt/kill.sh
+timeout 1m tailf nohup.out || exit 0
+EOF"""
+       
+    } catch (Exception err) {
+        currentBuild.result = 'SUCCESS'
+        
+        echo 'You choose abort the restart so it moved to next stage without restart'
+    }
+
+stage ('Deploy')
+ 
+   
+ 
+ try  {
+
+  def IP1 = input id: 'IP1',
+          message: 'Please select server ip',
+          ok: 'Okay',
+            parameters: [
+         [
+            $class: 'ChoiceParameterDefinition', choices: '10.56.110.145\n10.56.110.173', 
+            name: 'Take your pick',
+            description: 'Select the server ip'
+          ]
+    ]
+    
+sh """cd $WORKSPACE
+
+sshpass -p "test123" ssh -o StrictHostKeyChecking=no testuser@$IP1 << EOF
+
+echo $IP1
+
+cd /opt/upi-switch
+
+#mv upi-switch-${pom.version}.jar bkp/upi-switch-${pom.version}.jar-`date +\'%d_%b_%Y_%T\'` || exit 0
+
+EOF
+
+cd $WORKSPACE/target
+#sudo sshpass -p "test123" scp -r upi-switch-${pom.version}.jar testuser@$IP1:/opt/upi-switch
+
+
+"""
+     
+
+ stage ("Restart")
+        
+         input "Do you want restart service that you deployed on $IP1?"
+
+         try {
+        
+      sh """sshpass -p "test123" ssh -o StrictHostKeyChecking=no testuser@$IP1 << EOF
+cd /opt/upi-switch
+sh -x kill.sh && sleep 2
+./startService.sh upi-switch-1.0.0.jar
+sh -x /opt/kill.sh
+timeout 1m tailf nohup.out || exit 0
+EOF"""
+       
+    } catch (Exception err) {
+        currentBuild.result = 'SUCCESS'
+        
+        echo 'You choose abort the restart so it does not restart'
+    }
+        
+        
+        
+       
+   
+             
+     
+ }  catch (Exception err) {
+        currentBuild.result = 'SUCCESS'
+        
+        echo 'You choose abort the Deploy, it skips the restart stage as well'
+    }
+
+   
+    }
+     
+    
+}
+
+
+
