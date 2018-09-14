@@ -1,0 +1,47 @@
+def
+	ip_address = '10.56.110.152'
+	giturl = 'ssh://git@code.airtelworld.in:7999/air/dbtcustomeronboardservices.git'
+	branch_name = 'master'
+	remote_home = '/home/testuser/DBTCustomerOnboardServices'
+	jar_name = 'DBTCustomerOnboardServices-0.0.1-SNAPSHOT.jar'
+	jenkins_home = '$WORKSPACE/DBTCustomerOnboardServices/target'
+	jenkins_build = '$WORKSPACE/DBTCustomerOnboardServices/'
+//    JOB = 'java -jar "$jar_name" --spring.config.name=application --spring.config.location="$home"/properties'
+
+node 
+    {
+        pollSCM('*/1 * * * *')
+		stage('Git CheckOut') {
+        git branch: "$branch_name", url: "$giturl" , poll: true
+    }
+
+    stage('Build') {
+       sh """cd $jenkins_build && mvn clean -U -X install"""
+    }
+    
+    stage('Backup'){
+        sh """sshpass -p "test123" ssh -o StrictHostKeyChecking=no testuser@$ip_address << EOF 
+        mv "$remote_home/$jar_name" "$remote_home/backup/$jar_name-`date +%F-%M`" || exit 0
+        EOF"""
+        }
+
+
+    
+    stage('Deploy and Run') {
+//        input 'Proceed to Deploy?'
+        sh """scp -r "$jenkins_home/$jar_name" testuser@$ip_address:$remote_home/"""
+        sh """ssh -q -tt -o StrictHostKeyChecking=no testuser@$ip_address << EOF
+        sudo kill -9 \\`pgrep -f $jar_name"\\`
+        cd $remote_home/ && chmod 777 $jar_name"
+        sudo nohup java -jar "$jar_name" --spring.config.name=application --spring.config.location="$remote_home"/properties &
+        sudo kill -9 \\`pgrep -f 'sudo nohup'\\`
+        sleep 10
+		exit 1
+        EOF"""
+    }   
+    
+
+//    emailext body: '"Please go to ${BUILD_URL} and verify the build"', subject: '"Job \'${JOB_NAME}\' (${BUILD_NUMBER}) is waiting for input"', to: 'A_SHAHNWAZ.ALAM@airtel.com, aman1.singh@airtel.com, tarni.sharma@airtelbank.com'
+    emailext body: '"Please go to ${BUILD_URL} and verify the build"', subject: '"Job \'${JOB_NAME}\' (${BUILD_NUMBER}) is waiting for input"', to: 'a_mayank.koli@airtel.com'
+
+}    
