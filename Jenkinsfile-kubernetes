@@ -1,0 +1,217 @@
+def remote = [:]
+    remote.name = 'test'
+    remote.host = '10.85.50.62'
+    remote.user = 'testuser'
+    remote.password = 'redhat'
+    remote.allowAnyHosts = true
+    
+pipeline {
+
+    agent any
+    environment {
+      BUILD_USER = ''
+      scannerHome = tool 'sonarqubeScanner'
+      DOCKER_REGISTRY_URL = 'nexus.cloud.vssi.com:8083'
+      DOCKER_REPO = 'k8sdemo/frontend'
+      APP_NAME = 'frontend'
+      master_pod = 'jmeter-master-5-h7vnd'
+      qg = ''
+    }           
+    
+    stages {
+      stage('Slack'){
+        steps{
+          script{
+              echo "Slack"
+          }
+          slackSend channel: '#cicd',
+          color: 'good',
+          message: "*${currentBuild.currentResult}:* Job ${env.JOB_NAME} build ${env.BUILD_NUMBER} \n More info at: ${env.BUILD_URL}"
+        }
+      }//stage slack   
+
+
+      stage('Git') {
+        parallel {
+
+          stage('SCM Checkout') {
+            steps {
+              script {
+                echo "Fetching source code"
+              }
+            }
+          }// stage scm
+                    
+          stage('Static Code Analysis') {
+            steps{
+              script{
+                nodejs('node') {
+                  withSonarQubeEnv(credentialsId: 'sonar') {
+                    sh "${scannerHome}/bin/sonar-scanner"
+                  }
+                }// node close
+                qg = waitForQualityGate()
+          
+                if(qg.status != 'OK') {
+                  //error “Quality Gate failure: ${qg.status}”
+                  //echo "fail"
+                  slackSend channel: '#cicd',
+                  color: '#F01717',
+                  message: "ERROR Job ${env.JOB_NAME} Code coverage threshold Please review in sonarqube project"
+                }//if condition
+                     
+              }//script
+            }//steps
+          }//stage SAST
+                     
+        }//par
+      }//git close
+
+
+      stage('Automation Test') {
+        parallel{
+          stage('Unit Test') {
+            steps{
+                script{
+                    echo "Testing"
+                }
+            }
+          }//unit test
+                     
+          stage('Security Vulnerability Scan') {
+            steps{
+                script{
+                  snykSecurity failOnIssues: false, projectName: 'cloud-app', snykInstallation: 'snyk', snykTokenId: 'snyk' 
+                      
+                }
+            }
+          }//scan
+                    
+        }//par
+      }//stage test
+      
+       stage('Pause-1') {
+        input {
+          message "Wait..!!!"
+          id "job-pause6"
+        }
+        steps {
+          echo 'Pause'
+        }
+      }//stage
+ 
+      stage('Build Image ') {
+         
+        steps {
+         
+                
+                sshCommand remote: remote, command: "git clone http://git.cloud.vssi.com/cloudteam/frontend.git"
+                  sshCommand remote: remote, command: "cd frontend"
+                  sshCommand remote: remote, command: "docker build -t ${DOCKER_REPO}:v${BUILD_NUMBER}  ~/frontend"
+                  sshCommand remote: remote, command: "cd .."
+                  sshCommand remote: remote, command: "rm -rf frontend"
+        }
+      }//stage
+         
+
+       stage('Push to Nexus ') {
+         
+        steps {
+         
+                
+                  sshCommand remote: remote, command: "docker tag ${DOCKER_REPO}:v${BUILD_NUMBER}   nexus.cloud.vssi.com:8083/${DOCKER_REPO}:v${BUILD_NUMBER} "
+                   sshCommand remote: remote, command: "docker login nexus.cloud.vssi.com:8083 -u admin -p redhat "
+                    sshCommand remote: remote, command: "docker push nexus.cloud.vssi.com:8083/${DOCKER_REPO}:v${BUILD_NUMBER} "
+        }
+      }//stage
+         
+    
+        
+     stage('Anchore Container Security') {
+        steps {
+          script {
+             sh 'echo "nexus.cloud.vssi.com:8083/${DOCKER_REPO}:v${BUILD_NUMBER} " > anchore_images '
+          
+              anchore bailOnFail: false, bailOnPluginFail: false, name: 'anchore_images'
+
+          }
+        }
+      }//stage 
+
+      stage('Helm Package & Deploy ') {
+         agent {
+                kubernetes {
+                  label 'helmbuild'
+                  defaultContainer 'helm'
+                  yaml """
+            apiVersion: v1          
+            kind: Pod
+            metadata:
+              name: helm
+            spec:
+              containers:
+              - env:
+                - name: DOCKER_REPO
+                  value: ${DOCKER_REPO}
+                - name: BUILD_NUMBER
+                  value: ${env.BUILD_NUMBER}
+                name: helm
+                image: arfiqbal/helm-custom:v1
+                imagePullPolicy: Always
+                securityContext:
+                  privileged: true
+                  runAsUser: 0
+                command:
+                - cat
+                tty: true
+              serviceAccount: jenkin-sa
+            """
+                }
+              }
+        steps {
+          container('helm') {
+            git credentialsId: 'gitlab', url: 'http://git.cloud.vssi.com/cloudteam/frontend.git '
+            sh '''
+              helm repo add nexus http://admin:redhat@nexus.cloud.vssi.com:8081/repository/helm/
+              cd helm/vodafone-app
+               helm package ./ --version ${BUILD_NUMBER}
+              curl -u admin:redhat http://nexus.cloud.vssi.com:8081/repository/helm/ --upload-file vodafone-app-${BUILD_NUMBER}.tgz
+              helm upgrade vodafone-app . --set image.tag=v${BUILD_NUMBER}  -n test
+            
+             
+            '''
+          }
+        }
+      }//stage
+      
+      stage('Performance Test') {
+        steps {
+          script {
+    	    openshift.withCluster() {
+              openshift.withProject('jenkins') {
+              
+               sh "sleep 5"
+                sh "oc cp frontend.jmx ${master_pod}:/jmeter"
+                sh "oc exec -ti ${master_pod} -- /bin/bash ./jmeter/load_test"         
+                sh "oc cp ${master_pod}:jmeter/frontend.jtl frontend.jtl"        
+                perfReport filterRegex: '', sourceDataFiles: 'frontend.jtl'
+
+              }
+            }
+    			}
+        }
+      }//stage load test
+      
+       stage('Confirm Approval') {
+        input {
+          message "Deploy to production?"
+          id "simple-input"
+        }
+        steps {
+          echo 'Deploying'
+        }
+      }//stage
+       
+    
+    } // stages
+} // pipeline
