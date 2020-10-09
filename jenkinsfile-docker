@@ -1,0 +1,187 @@
+Docker Pileline
+
+docker login
+docker login -u admin 10.10.10.199:8082
+chmod 777 /var/run/docker.sock
+
+
+pipeline {
+  environment {
+    registry = "gustavoapolinario/docker-test"
+    registryCredential = 'dockerhub'
+    dockerImage = ''
+  }
+  agent any
+  tools {nodejs "node" }
+  stages {
+    stage('Cloning Git') {
+      steps {
+        git 'https://github.com/gustavoapolinario/node-todo-frontend'
+      }
+    }
+    stage('Build') {
+       steps {
+         sh 'npm install'
+       }
+    }
+    stage('Test') {
+      steps {
+        sh 'npm test'
+      }
+    }
+    stage('Building image') {
+      steps{
+        script {
+          dockerImage = docker.build registry + ":$BUILD_NUMBER"
+        }
+      }
+    }
+    stage('Deploy Image') {
+      steps{
+         script {
+            docker.withRegistry( '', registryCredential ) {
+            dockerImage.push()
+          }
+        }
+      }
+    }
+    stage('Remove Unused docker image') {
+      steps{
+        sh "docker rmi $registry:$BUILD_NUMBER"
+      }
+    }
+  }
+}
+
+
+
+https://medium.com/@gustavo.guss/jenkins-building-docker-image-and-sending-to-registry-64b84ea45ee9
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+====================================================================================================
+pipeline {
+  agent any
+
+  tools {
+    maven 'mvn-3.5.2'
+  }
+
+  stages {
+    stage('Build') {
+      steps {
+        sh 'mvn package'
+      }
+    }
+    
+    stage('Make Container') {
+      steps {
+      sh "docker build -t snscaimito/ledger-service:${env.BUILD_ID} ."
+      sh "docker tag snscaimito/ledger-service:${env.BUILD_ID} snscaimito/ledger-service:latest"
+      }
+    }
+    
+    stage('Check Specification') {
+      steps {
+        sh "chmod o+w *"
+        sh "docker-compose up --exit-code-from cucumber --build"
+      }
+    }
+  }
+
+  post {
+    always {
+      archive 'target/**/*.jar'
+      junit 'target/**/*.xml'
+      cucumber '**/*.json'
+    }
+    success {
+      withCredentials([usernamePassword(credentialsId: 'docker-credentials', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+        sh "docker login -u ${USERNAME} -p ${PASSWORD}"
+        sh "docker push snscaimito/ledger-service:${env.BUILD_ID}"
+        sh "docker push snscaimito/ledger-service:latest"
+      }
+    }
+  }
+}
+==================================================
+#Working  ========
+
+pipeline {
+  environment {
+    registry = "10.10.10.199:8082/apbdocker-repo"
+    registryCredential = 'apb-docker-hub'
+  }
+  agent any
+  stages {
+      
+    stage('Cloning Code') {
+      steps {
+        git 'ssh://git@code.demoworld.in:7999/demov/openbankingfundtransfer.git'
+      }
+    }
+    stage('Build') {
+       steps {
+         sh 'mvn clean install -DskipTests=true'
+       }
+    }  
+    stage('Dockerfile') {
+        steps {
+            git 'ssh://git@code.demoworld.in:7999/amfe/dockerfile.git'
+        }
+    } 
+    stage('Building image') {
+      steps{
+        script {
+          docker.build registry + ":$BUILD_NUMBER"
+        }
+      }
+    }
+    stage('Deploy Image') {
+      steps{
+        script {
+          def image = docker.build("$registry:${env.BUILD_ID}")
+          docker.withRegistry("http://10.10.10.199:8082/demodocker-repo", "demo-docker-hub") {
+            image.push("${env.BUILD_NUMBER}")
+            image.push("latest")
+          }
+        }
+      }
+    }
+  }
+}
+=================================================================================
+
+pipeline {
+  environment {
+    registry = "http://10.10.10.199:8082/demodocker-repo"
+    registryCredential = 'demo-docker-hub'
+
+  }
+  agent any
+  stages {
+      
+    stage('Clone Code') {
+      steps {
+        git 'ssh://git@code.demoworld.in:7999/amfe/monitoring.git'
+      }
+    }
+    stage('Code Build') {
+       steps {
+         sh 'mvn clean -U -X -o install -DskipTests=true'
+       }
+    }  
+
+    stage('Build image and Deploy') {
+      steps{
+        script {
+          def pom = readMavenPom file: 'pom.xml'
+          def image = docker.build("$pom.artifactId:$pom.version")
+          docker.withRegistry("$registry", "$registryCredential"){
+              image.push()
+              image.push("latest")
+          }
+        }
+      }
+    }
+  }
+}
